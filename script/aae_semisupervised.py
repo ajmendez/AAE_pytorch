@@ -34,9 +34,14 @@ valid_batch_size = args.batch_size
 N = 1000
 epochs = args.epochs
 
-params = {'n_classes': n_classes, 'z_dim': z_dim, 'X_dim': X_dim,
-          'y_dim': y_dim, 'train_batch_size': train_batch_size,
-          'valid_batch_size': valid_batch_size, 'N': N, 'epochs': epochs,
+params = {'n_classes': n_classes,
+          'z_dim': z_dim,
+          'X_dim': X_dim,
+          'y_dim': y_dim,
+          'train_batch_size': train_batch_size,
+          'valid_batch_size': valid_batch_size,
+          'N': N,
+          'epochs': epochs,
           'cuda': cuda}
 
 

@@ -1,4 +1,5 @@
 import argparse
+import os
 import torch
 import pickle
 import numpy as np
@@ -6,14 +7,15 @@ from torch.autograd import Variable
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import time
 
 # Training settings
 parser = argparse.ArgumentParser(description='PyTorch semi-supervised MNIST')
 
 parser.add_argument('--batch-size', type=int, default=100, metavar='N',
                     help='input batch size for training (default: 100)')
-parser.add_argument('--epochs', type=int, default=500, metavar='N',
-                    help='number of epochs to train (default: 10)')
+parser.add_argument('--epochs', type=int, default=100, metavar='N',
+                    help='number of epochs to train (default: 100)')
 
 args = parser.parse_args()
 cuda = torch.cuda.is_available()
@@ -96,6 +98,7 @@ class P_net(nn.Module):
         return F.sigmoid(x)
 
 
+# Discriminator
 class D_net_gauss(nn.Module):
     def __init__(self):
         super(D_net_gauss, self).__init__()
@@ -115,18 +118,6 @@ class D_net_gauss(nn.Module):
 ####################
 # Utility functions
 ####################
-def save_model(model, filename):
-    print('Best model so far, saving it...')
-    torch.save(model.state_dict(), filename)
-
-
-def report_loss(epoch, D_loss_gauss, G_loss, recon_loss):
-    '''
-    Print loss
-    '''
-    print('Epoch-{}; D_loss_gauss: {:.4}; G_loss: {:.4}; recon_loss: {:.4}'
-          .format(epoch, D_loss_gauss.data[0], G_loss.data[0],
-                  recon_loss.data[0]))
 
 
 def create_latent(Q, loader):
@@ -243,9 +234,26 @@ def train(P, Q, D_gauss, P_decoder, Q_encoder, Q_generator, D_gauss_solver, data
     return D_loss, G_loss, recon_loss
 
 
-def generate_model(train_labeled_loader, train_unlabeled_loader, valid_loader):
+def save_model(model, filename, models_path='../models/'):
+    # print('Best model so far, saving it...')
+    if not os.path.exists(models_path):
+        os.makedirs(models_path)
+    path = os.path.join(models_path, filename)
+    torch.save(model.state_dict(), path)
+
+
+def report_loss(report_fmt, epoch, D_loss_gauss, G_loss, recon_loss, dt):
+    '''
+    Print loss
+    '''
+    print(report_fmt.format(epoch, D_loss_gauss.data[0], G_loss.data[0],
+                  recon_loss.data[0], dt))
+
+
+def generate_model():
     torch.manual_seed(10)
 
+    # Construct networks Q (encoder), P (decoder), D_gauss (discriminator)
     if cuda:
         Q = Q_net().cuda()
         P = P_net().cuda()
@@ -259,23 +267,42 @@ def generate_model(train_labeled_loader, train_unlabeled_loader, valid_loader):
     gen_lr = 0.0001
     reg_lr = 0.00005
 
-    # Set optimizators
+    # Set optimizers
     P_decoder = optim.Adam(P.parameters(), lr=gen_lr)
     Q_encoder = optim.Adam(Q.parameters(), lr=gen_lr)
 
     Q_generator = optim.Adam(Q.parameters(), lr=reg_lr)
     D_gauss_solver = optim.Adam(D_gauss.parameters(), lr=reg_lr)
 
+    header_fields = ['Epoch', 'D_loss_gauss', 'G_loss', 'Recon_loss', 'dt']
+    header_fmt = '{:>10} {:>15} {:>15} {:>15} {:>10}'
+    report_fmt = '{:>10} {:>15.6e} {:>15.6e} {:>15.6e} {:>10.2f}'
+    header = header_fmt.format(*header_fields)
+    print('\n{}\n{}'.format(header, '-' * len(header)))
+
+    t_start = time.time()
     for epoch in range(epochs):
-        D_loss_gauss, G_loss, recon_loss = train(P, Q, D_gauss, P_decoder, Q_encoder,
+        D_loss_gauss, G_loss, recon_loss = train(P, Q, D_gauss,
+                                                 P_decoder,
+                                                 Q_encoder,
                                                  Q_generator,
                                                  D_gauss_solver,
                                                  train_unlabeled_loader)
         if epoch % 10 == 0:
-            report_loss(epoch, D_loss_gauss, G_loss, recon_loss)
+            dt = time.time() - t_start
+            report_loss(report_fmt, epoch, D_loss_gauss, G_loss, recon_loss,
+                        dt)
 
-    return Q, P
+            t_save = time.time()
+            save_model(Q, 'Q_net_{:05d}.p'.format(epoch))
+            save_model(P, 'P_net_{:05d}.p'.format(epoch))
+            save_model(D_gauss, 'D_gauss_{:05d}.p'.format(epoch))
+            t_save = time.time() - t_save
+            print('Took {:10.2f} to save the models.\n'.format(t_save))
+            t_start = time.time()
+
+    return Q, P, D_gauss
 
 if __name__ == '__main__':
     train_labeled_loader, train_unlabeled_loader, valid_loader = load_data()
-    Q, P = generate_model(train_labeled_loader, train_unlabeled_loader, valid_loader)
+    Q, P, D_gauss = generate_model()
