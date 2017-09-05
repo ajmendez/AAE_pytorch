@@ -119,14 +119,14 @@ def save_model(model, filename):
     print('Best model so far, saving it...')
     torch.save(model.state_dict(), filename)
 
+
 def report_loss(epoch, D_loss_gauss, G_loss, recon_loss):
     '''
     Print loss
     '''
-    print('Epoch-{}; D_loss_gauss: {:.4}; G_loss: {:.4}; recon_loss: {:.4}'.format(epoch,
-                                                                                   D_loss_gauss.data[0],
-                                                                                   G_loss.data[0],
-                                                                                   recon_loss.data[0]))
+    print('Epoch-{}; D_loss_gauss: {:.4}; G_loss: {:.4}; recon_loss: {:.4}'
+          .format(epoch, D_loss_gauss.data[0], G_loss.data[0],
+                  recon_loss.data[0]))
 
 
 def create_latent(Q, loader):
@@ -280,14 +280,17 @@ def generate_model():
     D_gauss_solver = optim.Adam(D_gauss.parameters(), lr=reg_lr)
 
     for epoch in range(epochs):
-        D_loss_gauss, G_loss, recon_loss = train(P, Q, D_gauss, P_decoder, Q_encoder,
+        D_loss_gauss, G_loss, recon_loss = train(P, Q,
+                                                 D_gauss, P_decoder, Q_encoder,
                                                  Q_generator,
                                                  D_gauss_solver,
                                                  valid_loader)
         if epoch % 10 == 0:
             report_loss(epoch, D_loss_gauss, G_loss, recon_loss)
 
+    return Q, P
+
 
 if __name__ == '__main__':
     train_labeled_loader, train_unlabeled_loader, valid_loader = load_data()
-    Q, P = generate_model(train_labeled_loader, train_unlabeled_loader, valid_loader)
+    Q, P = generate_model()

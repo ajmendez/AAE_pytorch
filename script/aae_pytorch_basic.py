@@ -124,10 +124,9 @@ def report_loss(epoch, D_loss_gauss, G_loss, recon_loss):
     '''
     Print loss
     '''
-    print('Epoch-{}; D_loss_gauss: {:.4}; G_loss: {:.4}; recon_loss: {:.4}'.format(epoch,
-                                                                                   D_loss_gauss.data[0],
-                                                                                   G_loss.data[0],
-                                                                                   recon_loss.data[0]))
+    print('Epoch-{}; D_loss_gauss: {:.4}; G_loss: {:.4}; recon_loss: {:.4}'
+          .format(epoch, D_loss_gauss.data[0], G_loss.data[0],
+                  recon_loss.data[0]))
 
 
 def create_latent(Q, loader):
