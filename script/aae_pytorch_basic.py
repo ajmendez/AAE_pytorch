@@ -25,7 +25,9 @@ seed = 10
 
 kwargs = {'num_workers': 1, 'pin_memory': True} if cuda else {}
 n_classes = 10
-z_dim = 2
+weight_init = {'distro': 'gaussian', 'params': {'mu':0, 'std': 0.01}}
+z_dim = 8
+z_prior_std = 5.
 X_dim = 784
 y_dim = 10
 train_batch_size = args.batch_size
@@ -37,13 +39,22 @@ epochs = args.epochs
 ##################################
 # Load data and create Data loaders
 ##################################
-def load_data(data_path='../data/'):
-    print('loading data!')
-    trainset_labeled = pickle.load(open(data_path + "train_labeled.p", "rb"))
-    trainset_unlabeled = pickle.load(open(data_path + "train_unlabeled.p", "rb"))
-    # Set -1 as labels for unlabeled data
-    trainset_unlabeled.train_labels = torch.from_numpy(np.array([-1] * 47000))
-    validset = pickle.load(open(data_path + "validation.p", "rb"))
+def load_data():
+    from .create_datasets import split_dataset, load_mnist
+
+    print('Loading data!')
+    trainset_labeled, trainset_unlabeled, validset = \
+        split_dataset(load_mnist(), n_train_labels_pc=10, n_validation_pc=1000)
+
+    if trainset_unlabeled.train_labels is None:
+        n = trainset_unlabeled.train_data.size()[0]
+        trainset_unlabeled.train_labels = torch.from_numpy(np.array([-1] * n))
+
+    # trainset_labeled = pickle.load(open(data_path + "train_labeled.p", "rb"))
+    # trainset_unlabeled = pickle.load(open(data_path + "train_unlabeled.p", "rb"))
+    # # Set -1 as labels for unlabeled data
+    # trainset_unlabeled.train_labels = torch.from_numpy(np.array([-1] * 47000))
+    # validset = pickle.load(open(data_path + "validation.p", "rb"))
 
     train_labeled_loader = torch.utils.data.DataLoader(trainset_labeled,
                                                        batch_size=train_batch_size,
@@ -61,7 +72,7 @@ def load_data(data_path='../data/'):
 ##################################
 # Define Networks
 ##################################
-# Encoder
+# Encoder - Generator
 class Q_net(nn.Module):
     def __init__(self):
         super(Q_net, self).__init__()
@@ -82,7 +93,11 @@ class Q_net(nn.Module):
 
 # Decoder
 class P_net(nn.Module):
-    def __init__(self):
+    def __init__(self, input_dim=z_dim):
+        """
+        input_dim : int
+            could be either z_dim (basic), z_dim + n_classes (supervised)
+        """
         super(P_net, self).__init__()
         self.lin1 = nn.Linear(z_dim, N)
         self.lin2 = nn.Linear(N, N)
@@ -149,6 +164,14 @@ def create_latent(Q, loader):
     return z_values, labels
 
 
+# Used for supervised classification
+def get_categorical(labels, n_classes=10):
+    cat = np.array(labels.data.tolist())
+    cat = np.eye(n_classes)[cat].astype('float32')
+    cat = torch.from_numpy(cat)
+    return Variable(cat)
+
+
 ####################
 # Train procedure
 ####################
@@ -182,7 +205,17 @@ def train(P, Q, D_gauss, P_decoder, Q_encoder, Q_generator, D_gauss_solver, data
         #######################
         # Reconstruction phase
         #######################
-        z_sample = Q(X)
+
+        if mode == 'basic':
+            z_sample = Q(X)
+        elif mode == 'supervised':
+            z_gauss = Q(X)
+            z_cat = get_categorical(target, n_classes=10)
+            if cuda:
+                z_cat = z_cat.cuda()
+
+            z_sample = torch.cat((z_cat, z_gauss), 1)
+
         X_sample = P(z_sample)
         recon_loss = F.binary_cross_entropy(X_sample + TINY, X.resize(train_batch_size, X_dim) + TINY)
 
@@ -199,7 +232,8 @@ def train(P, Q, D_gauss, P_decoder, Q_encoder, Q_generator, D_gauss_solver, data
         #######################
         # Discriminator
         Q.eval()
-        z_real_gauss = Variable(torch.randn(train_batch_size, z_dim) * 5.)
+        z_real_gauss = Variable(torch.randn(train_batch_size, z_dim) *
+                                z_prior_std)
         if cuda:
             z_real_gauss = z_real_gauss.cuda()
 
@@ -234,7 +268,7 @@ def train(P, Q, D_gauss, P_decoder, Q_encoder, Q_generator, D_gauss_solver, data
     return D_loss, G_loss, recon_loss
 
 
-def save_model(model, filename, models_path='../models/'):
+def save_model(model, filename, models_path='../models/unsupervised'):
     # print('Best model so far, saving it...')
     if not os.path.exists(models_path):
         os.makedirs(models_path)
@@ -242,12 +276,11 @@ def save_model(model, filename, models_path='../models/'):
     torch.save(model.state_dict(), path)
 
 
-def report_loss(report_fmt, epoch, D_loss_gauss, G_loss, recon_loss, dt):
+def report_loss(report_fmt, **kwargs):
     '''
     Print loss
     '''
-    print(report_fmt.format(epoch, D_loss_gauss.data[0], G_loss.data[0],
-                  recon_loss.data[0], dt))
+    print(report_fmt.format(**kwargs))
 
 
 def generate_model():
@@ -275,8 +308,11 @@ def generate_model():
     D_gauss_solver = optim.Adam(D_gauss.parameters(), lr=reg_lr)
 
     header_fields = ['Epoch', 'D_loss_gauss', 'G_loss', 'Recon_loss', 'dt']
+
     header_fmt = '{:>10} {:>15} {:>15} {:>15} {:>10}'
-    report_fmt = '{:>10} {:>15.6e} {:>15.6e} {:>15.6e} {:>10.2f}'
+    report_fmt = '{epoch:>10} {d_loss_gauss:>15.6e} {g_loss:>15.6e} ' \
+                 '{recon_loss:>15.6e} {dt:>10.2f}'
+
     header = header_fmt.format(*header_fields)
     print('\n{}\n{}'.format(header, '-' * len(header)))
 
@@ -290,8 +326,14 @@ def generate_model():
                                                  train_unlabeled_loader)
         if epoch % 10 == 0:
             dt = time.time() - t_start
-            report_loss(report_fmt, epoch, D_loss_gauss, G_loss, recon_loss,
-                        dt)
+
+            report_args = {'epoch': epoch,
+                           'd_loss_gauss': D_loss_gauss.data[0],
+                           'g_loss': G_loss.data[0],
+                           'recon_loss': recon_loss.data[0],
+                           'dt': dt}
+
+            report_loss(report_fmt, **report_args)
 
             t_save = time.time()
             save_model(Q, 'Q_net_{:05d}.p'.format(epoch))
@@ -303,6 +345,9 @@ def generate_model():
 
     return Q, P, D_gauss
 
+
 if __name__ == '__main__':
+    mode = 'basic'
+    models_path = '../models/unsupervised'
     train_labeled_loader, train_unlabeled_loader, valid_loader = load_data()
     Q, P, D_gauss = generate_model()

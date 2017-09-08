@@ -6,6 +6,8 @@ from torch.autograd import Variable
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import time
+
 
 # Training settings
 parser = argparse.ArgumentParser(description='PyTorch semi-supervised MNIST')
@@ -279,6 +281,7 @@ def generate_model():
     Q_generator = optim.Adam(Q.parameters(), lr=reg_lr)
     D_gauss_solver = optim.Adam(D_gauss.parameters(), lr=reg_lr)
 
+    t_start = time.time()
     for epoch in range(epochs):
         D_loss_gauss, G_loss, recon_loss = train(P, Q,
                                                  D_gauss, P_decoder, Q_encoder,

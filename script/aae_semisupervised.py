@@ -1,10 +1,11 @@
+import torch
+import numpy as np
 import argparse
 import time
-import torch
 import pickle
-import numpy as np
 import itertools
-from viz import *
+# from .viz import *
+from aae_pytorch_basic import save_model, report_loss, load_data
 from torch.autograd import Variable
 import torch.nn as nn
 import torch.nn.functional as F
@@ -15,8 +16,8 @@ parser = argparse.ArgumentParser(description='PyTorch semi-supervised MNIST')
 
 parser.add_argument('--batch-size', type=int, default=100, metavar='N',
                     help='input batch size for training (default: 100)')
-parser.add_argument('--epochs', type=int, default=500, metavar='N',
-                    help='number of epochs to train (default: 10)')
+parser.add_argument('--epochs', type=int, default=5000, metavar='N',
+                    help='number of epochs to train (default: 5000)')
 
 args = parser.parse_args()
 cuda = torch.cuda.is_available()
@@ -26,8 +27,8 @@ seed = 10
 
 kwargs = {'num_workers': 1, 'pin_memory': True} if cuda else {}
 n_classes = 10
-z_dim = 2
 X_dim = 784
+z_dim = 10
 y_dim = 10
 train_batch_size = args.batch_size
 valid_batch_size = args.batch_size
@@ -46,33 +47,9 @@ params = {'n_classes': n_classes,
 
 
 ##################################
-# Load data and create Data loaders
-##################################
-def load_data(data_path='../data/'):
-    print('loading data!')
-    trainset_labeled = pickle.load(open(data_path + "train_labeled.p", "rb"))
-    trainset_unlabeled = pickle.load(open(data_path + "train_unlabeled.p", "rb"))
-    # Set -1 as labels for unlabeled data
-    trainset_unlabeled.train_labels = torch.from_numpy(np.array([-1] * 47000))
-    validset = pickle.load(open(data_path + "validation.p", "rb"))
-
-    train_labeled_loader = torch.utils.data.DataLoader(trainset_labeled,
-                                                       batch_size=train_batch_size,
-                                                       shuffle=True, **kwargs)
-
-    train_unlabeled_loader = torch.utils.data.DataLoader(trainset_unlabeled,
-                                                         batch_size=train_batch_size,
-                                                         shuffle=True, **kwargs)
-
-    valid_loader = torch.utils.data.DataLoader(validset, batch_size=valid_batch_size, shuffle=True)
-
-    return train_labeled_loader, train_unlabeled_loader, valid_loader
-
-
-##################################
 # Define Networks
 ##################################
-# Encoder
+# Encoder - Generator
 class Q_net(nn.Module):
     def __init__(self):
         super(Q_net, self).__init__()
@@ -130,6 +107,7 @@ class D_net_cat(nn.Module):
         return F.sigmoid(x)
 
 
+# Discriminator
 class D_net_gauss(nn.Module):
     def __init__(self):
         super(D_net_gauss, self).__init__()
@@ -145,31 +123,6 @@ class D_net_gauss(nn.Module):
 
         return F.sigmoid(self.lin3(x))
 
-
-####################
-# Utility functions
-####################
-def sample_categorical(batch_size, n_classes=10):
-    '''
-     Sample from a categorical distribution
-     of size batch_size and # of classes n_classes
-     return: torch.autograd.Variable with the sample
-    '''
-    cat = np.random.randint(0, 10, batch_size)
-    cat = np.eye(n_classes)[cat].astype('float32')
-    cat = torch.from_numpy(cat)
-    return Variable(cat)
-
-
-def report_loss(epoch, D_loss_cat, D_loss_gauss, G_loss, recon_loss):
-    '''
-    Print loss
-    '''
-    print('Epoch-{}; D_loss_cat: {:.4}; D_loss_gauss: {:.4}; G_loss: {:.4}; recon_loss: {:.4}'.format(epoch,
-                                                                                                      D_loss_cat.data[0],
-                                                                                                      D_loss_gauss.data[0],
-                                                                                                      G_loss.data[0],
-                                                                                                      recon_loss.data[0]))
 
 
 def create_latent(Q, loader):
@@ -201,6 +154,7 @@ def create_latent(Q, loader):
     return z_values, labels
 
 
+# Used for supervised classification
 def get_categorical(labels, n_classes=10):
     cat = np.array(labels.data.tolist())
     cat = np.eye(n_classes)[cat].astype('float32')
@@ -234,10 +188,56 @@ def classification_accuracy(Q, data_loader):
     return 100. * correct / len(data_loader.dataset)
 
 
+def eval_model():
+    import os
+    all_model_files = os.listdir(models_path)
+    model_names = {'Q_net', 'P_net', 'D_gauss'}
+    model_files = {}
+
+    for name in model_names:
+        k_model_files = [mf for mf in all_model_files if mf.startswith(name)]
+        k_model_files = [os.path.join(models_path, mf) for mf in k_model_files]
+        model_file = max(k_model_files, key=os.path.getctime)
+        model_files[name] = model_file
+
+    # Construct networks Q (encoder), P (decoder), D_gauss (discriminator)
+    if cuda:
+        Q = Q_net().cuda()
+        P = P_net().cuda()
+        D_gauss = D_net_gauss().cuda()
+    else:
+        Q = Q_net()
+        P = P_net()
+        D_gauss = D_net_gauss()
+
+    # Load models weights
+    Q.load_state_dict(torch.load(model_files['Q_net']))
+    # P.load_state_dict(torch.load(model_files['P_net']))
+    # D_gauss.load_state_dict(torch.load(model_files['D_gauss']))
+
+    from torchvision import datasets, transforms
+
+    transform = transforms.Compose([transforms.ToTensor(),
+                                    transforms.Normalize((0.1307,),
+                                                         (0.3081,))])
+
+    testset = datasets.MNIST('../data', train=False, download=True,
+                             transform=transform)
+
+    testloader = torch.utils.data.DataLoader(testset, batch_size=4,
+                                              shuffle=True, num_workers=2)
+
+    test_acc = classification_accuracy(Q, testloader)
+    print('Test accuracy: {:5.2f}%'.format(test_acc))
+
+    return test_acc
+
 ####################
 # Train procedure
 ####################
-def train(P, Q, D_cat, D_gauss, P_decoder, Q_encoder, Q_semi_supervised, Q_generator, D_cat_solver, D_gauss_solver, train_labeled_loader, train_unlabeled_loader):
+def train(P, Q, D_cat, D_gauss, P_decoder, Q_encoder, Q_semi_supervised,
+          Q_generator, D_cat_solver, D_gauss_solver, train_labeled_loader,
+          train_unlabeled_loader):
     '''
     Train procedure for one epoch.
     '''
@@ -254,7 +254,7 @@ def train(P, Q, D_cat, D_gauss, P_decoder, Q_encoder, Q_semi_supervised, Q_gener
     # Loop through the labeled and unlabeled dataset getting one batch of samples from each
     # The batch size has to be a divisor of the size of the dataset or it will return
     # invalid samples
-    for (X_l, target_l), (X_u, target_u) in itertools.izip(train_labeled_loader, train_unlabeled_loader):
+    for (X_l, target_l), (X_u, target_u) in zip(train_labeled_loader, train_unlabeled_loader):
 
         for X, target in [(X_u, target_u), (X_l, target_l)]:
             if target[0] == -1:
@@ -361,7 +361,22 @@ def train(P, Q, D_cat, D_gauss, P_decoder, Q_encoder, Q_semi_supervised, Q_gener
     return D_loss_cat, D_loss_gauss, G_loss, recon_loss, class_loss
 
 
-def generate_model(train_labeled_loader, train_unlabeled_loader, valid_loader):
+####################
+# Utility functions
+####################
+def sample_categorical(batch_size, n_classes=10):
+    '''
+     Sample from a categorical distribution
+     of size batch_size and # of classes n_classes
+     return: torch.autograd.Variable with the sample
+    '''
+    cat = np.random.randint(0, 10, batch_size)
+    cat = np.eye(n_classes)[cat].astype('float32')
+    cat = torch.from_numpy(cat)
+    return Variable(cat)
+
+
+def generate_model():
     torch.manual_seed(10)
 
     if cuda:
@@ -380,7 +395,7 @@ def generate_model(train_labeled_loader, train_unlabeled_loader, valid_loader):
     semi_lr = 0.001
     reg_lr = 0.0008
 
-    # Set optimizators
+    # Set optimizers
     P_decoder = optim.Adam(P.parameters(), lr=gen_lr)
     Q_encoder = optim.Adam(Q.parameters(), lr=gen_lr)
 
@@ -390,28 +405,55 @@ def generate_model(train_labeled_loader, train_unlabeled_loader, valid_loader):
     D_gauss_solver = optim.Adam(D_gauss.parameters(), lr=reg_lr)
     D_cat_solver = optim.Adam(D_cat.parameters(), lr=reg_lr)
 
-    start = time.time()
+    header_fields = ['Epoch', 'D_loss_gauss', 'G_loss', 'Recon_loss',
+                     'Class_loss', 'Train_acc', 'Valid_acc', 'dt']
+
+    header_fmt = '{:>10} {:>15} {:>15} {:>15} {:>15} {:>15} {:>15} {:>10}'
+    report_fmt = '{epoch:>10} {d_loss_gauss:>15.6e} {g_loss:>15.6e} ' \
+                 '{recon_loss:>15.6e} {class_loss:>15.6e} {train_acc:>15.6e} '\
+                 '{val_acc:>15.6e} {dt:>10.2f}'
+
+    header = header_fmt.format(*header_fields)
+    print('\n{}\n{}'.format(header, '-' * len(header)))
+
+    t_start = time.time()
+    t_total = t_start
     for epoch in range(epochs):
-        D_loss_cat, D_loss_gauss, G_loss, recon_loss, class_loss = train(P, Q, D_cat,
-                                                                         D_gauss, P_decoder,
-                                                                         Q_encoder, Q_semi_supervised,
-                                                                         Q_generator,
-                                                                         D_cat_solver, D_gauss_solver,
-                                                                         train_labeled_loader,
-                                                                         train_unlabeled_loader)
+        D_loss_cat, D_loss_gauss, G_loss, recon_loss, class_loss = \
+            train(P, Q, D_cat, D_gauss, P_decoder, Q_encoder,
+                  Q_semi_supervised, Q_generator, D_cat_solver,
+                  D_gauss_solver, train_labeled_loader, train_unlabeled_loader)
+
         if epoch % 10 == 0:
+            dt = time.time() - t_start
             train_acc = classification_accuracy(Q, train_labeled_loader)
             val_acc = classification_accuracy(Q, valid_loader)
-            report_loss(epoch, D_loss_cat, D_loss_gauss, G_loss, recon_loss)
-            print('Classification Loss: {:.3}'.format(class_loss.data[0]))
-            print('Train accuracy: {} %'.format(train_acc))
-            print('Validation accuracy: {} %'.format(val_acc))
-    end = time.time()
-    print('Training time: {} seconds'.format(end - start))
 
-    return Q, P
+            report_args = {'epoch': epoch,
+                           'd_loss_gauss': D_loss_gauss.data[0],
+                           'g_loss': G_loss.data[0],
+                           'recon_loss': recon_loss.data[0],
+                           'class_loss': class_loss.data[0],
+                           'dt': dt,
+                           'train_acc': train_acc,
+                           'val_acc': val_acc}
+
+            report_loss(report_fmt, **report_args)
+
+            save_model(Q, 'Q_net_{:05d}.p'.format(epoch), models_path)
+            save_model(P, 'P_net_{:05d}.p'.format(epoch), models_path)
+            save_model(D_gauss, 'D_gauss_{:05d}.p'.format(epoch), models_path)
+            save_model(D_cat, 'D_cat_{:05d}.p'.format(epoch), models_path)
+            t_start = time.time()
+
+    t_total = time.time() - t_total
+    print('Training time: {:10.2f} seconds.\n'.format(t_total))
+
+    return Q, P, D_gauss, D_cat
 
 
 if __name__ == '__main__':
+    models_path = '../models/semisup'
     train_labeled_loader, train_unlabeled_loader, valid_loader = load_data()
-    Q, P = generate_model(train_labeled_loader, train_unlabeled_loader, valid_loader)
+    # Q, P, D_gauss, D_cat = generate_model()
+    eval_model()
