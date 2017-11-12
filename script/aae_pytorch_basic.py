@@ -139,6 +139,7 @@ def create_latent(Q, loader):
     '''
     Q.eval()
     labels = []
+    z_values = np.array([]).reshape(0, z_dim)
 
     for batch_idx, (X, target) in enumerate(loader):
 
